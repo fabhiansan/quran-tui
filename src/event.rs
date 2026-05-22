@@ -13,6 +13,11 @@ pub enum AppMessage {
     Download(OutputId, DownloadUpdate),
     /// A device-refresh worker finished enumerating output devices.
     DevicesRefreshed(Vec<AudioDevice>),
+    /// A verse-fetch worker finished loading one surah's verses.
+    Verses {
+        surah: u16,
+        result: Result<crate::domain::verses::SurahVerses, String>,
+    },
     /// A non-fatal error to surface to the user.
     Error(String),
 }

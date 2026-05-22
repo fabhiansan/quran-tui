@@ -81,6 +81,14 @@ fn default_audio_root() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("quran-tui-audio"))
 }
 
+/// `<data_dir>/verses`, or a temp dir if no data directory is available.
+/// Where fetched verse text + translation JSON is cached.
+pub fn verses_dir() -> PathBuf {
+    directories::ProjectDirs::from("dev", "local", "quran-tui")
+        .map(|dirs| dirs.data_dir().join("verses"))
+        .unwrap_or_else(|| std::env::temp_dir().join("quran-tui-verses"))
+}
+
 /// Write `bytes` to `path` atomically via a `.part` sibling + rename.
 fn write_atomic(path: &Path, bytes: &[u8]) {
     let tmp = path.with_extension("part");

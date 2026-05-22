@@ -3,3 +3,4 @@
 pub mod catalog;
 pub mod segment;
 pub mod slug;
+pub mod verses;

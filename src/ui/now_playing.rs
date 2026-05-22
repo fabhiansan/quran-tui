@@ -1,13 +1,13 @@
 //! Now Playing tab — single-output layout (§7.2).
 
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::{theme, widgets};
-use crate::app::App;
+use crate::app::{App, VerseView};
 use crate::model::output::{DownloadProgress, OutputChannel};
 
 /// Draw the Now Playing content region.
@@ -132,7 +132,9 @@ fn draw_empty(frame: &mut Frame, area: Rect) {
 
 /// Full playback layout.
 fn draw_playing(frame: &mut Frame, area: Rect, app: &App, output: &OutputChannel) {
-    let cfg = &output.config;
+    // Use the snapshot taken when playback started so that browsing elsewhere
+    // doesn't change what's shown on the Now Playing tab.
+    let cfg = output.display_config.as_ref().unwrap_or(&output.config);
     let surah = app.catalog.surah(cfg.from_surah);
     let reciter_name = app
         .catalog
@@ -234,10 +236,50 @@ fn draw_playing(frame: &mut Frame, area: Rect, app: &App, output: &OutputChannel
         )));
     }
 
-    frame.render_widget(
-        Paragraph::new(lines),
-        widgets::vertically_centered(area, 14),
-    );
+    // Split the region: playback info on top, the verse panel below. The info
+    // block is 12 rows normally; the 13th row (the fallback note) only appears
+    // when the verse panel is hidden anyway, so give the panel that row back.
+    let info_height = if output.is_fallback { 13 } else { 12 };
+    let chunks =
+        Layout::vertical([Constraint::Length(info_height), Constraint::Min(0)]).split(area);
+    frame.render_widget(Paragraph::new(lines), chunks[0]);
+    draw_verse_panel(frame, chunks[1], app);
+}
+
+/// Verse text + translation for the current ayah, drawn below the playback info.
+fn draw_verse_panel(frame: &mut Frame, area: Rect, app: &App) {
+    if area.height == 0 {
+        return;
+    }
+    let dim = Style::default().fg(theme::DIM);
+
+    let lines: Vec<Line> = match app.current_verse() {
+        VerseView::Ready { surah, ayah, verse } => vec![
+            Line::from(Span::styled(format!("  ── Q.S. {surah}:{ayah} ──"), dim)),
+            Line::from(Span::styled(
+                format!("  {}", reverse_rtl(&verse.ar)),
+                Style::default().fg(theme::ACCENT),
+            )),
+            Line::from(Span::styled(format!("  {}", verse.latin), dim)),
+            Line::from(""),
+            Line::from(format!("  {}", verse.id)),
+        ],
+        VerseView::Loading => vec![Line::from(Span::styled("  ⟳  memuat teks ayat…", dim))],
+        VerseView::Unavailable => vec![Line::from(Span::styled(
+            "  teks ayat belum tersedia (perlu koneksi internet)",
+            dim,
+        ))],
+        VerseView::Hidden => return,
+    };
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// Reorder a right-to-left line for a terminal that places words left-to-right
+/// but already shapes each word correctly on its own. Only the word order is
+/// reversed; the letters within each word are left untouched.
+fn reverse_rtl(text: &str) -> String {
+    text.split(' ').rev().collect::<Vec<_>>().join(" ")
 }
 
 /// Range label: `ayah 1–110` for one surah, `18:1 – 20:30` for a span.
@@ -259,5 +301,25 @@ fn progress_ratio(output: &OutputChannel) -> f32 {
         Some(len) if len.as_secs_f32() > 0.0 => output.elapsed.as_secs_f32() / len.as_secs_f32(),
         _ if output.track_total > 0 => output.track_index as f32 / output.track_total as f32,
         _ => 0.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reverse_rtl;
+
+    #[test]
+    fn reverse_rtl_reverses_word_order() {
+        assert_eq!(reverse_rtl("satu dua tiga"), "tiga dua satu");
+    }
+
+    #[test]
+    fn reverse_rtl_leaves_letters_within_a_word_untouched() {
+        assert_eq!(reverse_rtl("abc def"), "def abc");
+    }
+
+    #[test]
+    fn reverse_rtl_handles_a_single_word() {
+        assert_eq!(reverse_rtl("abc"), "abc");
     }
 }

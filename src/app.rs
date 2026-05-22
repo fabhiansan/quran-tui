@@ -1,6 +1,7 @@
 //! Central application state and the input/update logic. The main thread is the
 //! single owner of `App` (§5.1 of the plan).
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -10,11 +11,12 @@ use ratatui::widgets::ListState;
 
 use crate::audio::device::{self, AudioDevice};
 use crate::audio::engine::{EngineCommand, EngineEvent, EngineState, PlaybackEngine};
-use crate::config::AppConfig;
+use crate::config::{self, AppConfig};
 use crate::content::downloader;
 use crate::content::resolver::{self, Resolution};
 use crate::domain::catalog::{Catalog, Reciter, Surah};
 use crate::domain::segment::{playback_segments, PlaybackSegment};
+use crate::domain::verses::{SurahVerses, Verse};
 use crate::event::{AppMessage, DownloadUpdate};
 use crate::model::output::{DownloadProgress, OutputChannel, OutputId};
 use crate::model::playback_config::PlaybackConfig;
@@ -68,6 +70,22 @@ pub struct Toast {
     pub text: String,
     pub kind: ToastKind,
     pub expires: Instant,
+}
+
+/// What the Now Playing verse panel should display for the current track.
+pub enum VerseView<'a> {
+    /// Verse text and translation are ready to show.
+    Ready {
+        surah: u16,
+        ayah: u16,
+        verse: &'a Verse,
+    },
+    /// A fetch for this surah is in flight.
+    Loading,
+    /// The verse could not be loaded — offline, or the fetch failed.
+    Unavailable,
+    /// No verse applies — a bismillah clip or a whole-surah fallback file.
+    Hidden,
 }
 
 /// Which Browse control currently has focus.
@@ -186,6 +204,13 @@ pub struct App {
     /// The active modal dialog, if any.
     pub modal: Option<Modal>,
 
+    /// Verse text + translation per surah, loaded lazily; key = surah number.
+    pub verses: HashMap<u16, SurahVerses>,
+    /// Surahs with an in-flight verse fetch — guards against duplicate workers.
+    verses_pending: HashSet<u16>,
+    /// Directory where fetched verse JSON is cached.
+    verses_dir: PathBuf,
+
     /// Receiver drained by the main loop; engine threads hold cloned senders.
     pub msg_rx: Receiver<AppMessage>,
     /// Kept so background threads (engines, download workers) can be handed clones.
@@ -237,6 +262,9 @@ impl App {
             preset_cursor: 0,
             missing_devices: Vec::new(),
             modal: None,
+            verses: HashMap::new(),
+            verses_pending: HashSet::new(),
+            verses_dir: config::verses_dir(),
             msg_rx,
             msg_tx,
         }
@@ -646,6 +674,7 @@ impl App {
         output.track_total = 0;
         output.track_labels.clear();
         output.elapsed = Duration::ZERO;
+        output.display_config = None;
     }
 
     fn transport(&self, cmd: EngineCommand) {
@@ -687,10 +716,15 @@ impl App {
             self.set_toast("Nothing to play for that range", ToastKind::Warn);
             return;
         }
+        self.ensure_verses(&segments);
 
         match resolver::resolve(&segments, &reciter, &self.config.audio_root) {
-            Resolution::Local(tracks) => self.apply_local(index, tracks, &segments, autoplay),
+            Resolution::Local(tracks) => {
+                self.outputs[index].display_config = Some(cfg.clone());
+                self.apply_local(index, tracks, &segments, autoplay);
+            }
             Resolution::WholeSurahFallback(path) => {
+                self.outputs[index].display_config = Some(cfg.clone());
                 self.apply_whole_surah(index, path, cfg.from_surah, autoplay);
                 self.set_toast(
                     "Per-ayah files absent — playing the whole-surah file",
@@ -771,6 +805,47 @@ impl App {
             format!("Downloading {total} ayah file(s)…"),
             ToastKind::Info,
         );
+    }
+
+    // --- Verses -----------------------------------------------------------
+
+    /// Ensure every surah in `segments` has its verse text loaded or being
+    /// fetched. Already-cached and already-pending surahs are skipped, so this
+    /// is cheap to call on every `start_playback`.
+    fn ensure_verses(&mut self, segments: &[PlaybackSegment]) {
+        for segment in segments {
+            let surah = segment.surah.number;
+            if self.verses.contains_key(&surah) || !self.verses_pending.insert(surah) {
+                continue;
+            }
+            crate::content::verses::fetch_surah(
+                surah,
+                self.verses_dir.clone(),
+                self.msg_tx.clone(),
+            );
+        }
+    }
+
+    /// Verse-panel state for the focused output's current track.
+    pub fn current_verse(&self) -> VerseView<'_> {
+        let output = self.focused();
+        if output.is_fallback {
+            return VerseView::Hidden;
+        }
+        let Some((surah, ayah)) = output.current_track_label().and_then(parse_track_ref) else {
+            return VerseView::Hidden;
+        };
+        if let Some(surah_verses) = self.verses.get(&surah) {
+            return match surah_verses.ayah(ayah) {
+                Some(verse) => VerseView::Ready { surah, ayah, verse },
+                None => VerseView::Unavailable,
+            };
+        }
+        if self.verses_pending.contains(&surah) {
+            VerseView::Loading
+        } else {
+            VerseView::Unavailable
+        }
     }
 
     // --- Multi-output -----------------------------------------------------
@@ -909,6 +984,7 @@ impl App {
         output.track_total = 0;
         output.track_labels.clear();
         output.elapsed = Duration::ZERO;
+        output.display_config = None;
         self.set_toast(format!("Bound to {}", device_info.name), ToastKind::Info);
     }
 
@@ -941,6 +1017,7 @@ impl App {
             output.track_total = 0;
             output.track_labels.clear();
             output.elapsed = Duration::ZERO;
+            output.display_config = None;
         }
     }
 
@@ -1049,10 +1126,23 @@ impl App {
                 self.devices = devices;
                 self.device_cursor = self.device_cursor.min(self.devices.len().saturating_sub(1));
             }
+            AppMessage::Verses { surah, result } => self.handle_verses_loaded(surah, result),
             AppMessage::Error(err) => {
                 tracing::error!("background error: {err}");
                 self.set_toast(err, ToastKind::Error);
             }
+        }
+    }
+
+    /// Store a completed verse fetch, or log and ignore a failure. A failure
+    /// stays silent in the UI — the verse panel falls back to "unavailable".
+    fn handle_verses_loaded(&mut self, surah: u16, result: Result<SurahVerses, String>) {
+        self.verses_pending.remove(&surah);
+        match result {
+            Ok(surah_verses) => {
+                self.verses.insert(surah, surah_verses);
+            }
+            Err(err) => tracing::warn!("verse fetch for surah {surah} failed: {err}"),
         }
     }
 
@@ -1130,6 +1220,7 @@ impl App {
                 output.track_index = 0;
                 output.track_total = 0;
                 output.track_labels.clear();
+                output.display_config = None;
             }
         }
     }
@@ -1179,6 +1270,13 @@ fn restore_config(catalog: &Catalog, config: &AppConfig) -> PlaybackConfig {
     }
 }
 
+/// Parse a track label such as `"18:5"` into `(surah, ayah)`. Non-ayah labels
+/// like `"Bismillah"` yield `None`.
+fn parse_track_ref(label: &str) -> Option<(u16, u16)> {
+    let (surah, ayah) = label.split_once(':')?;
+    Some((surah.parse().ok()?, ayah.parse().ok()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,6 +1294,15 @@ mod tests {
     fn test_app() -> App {
         let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../TestAssets");
         App::new(Some(assets))
+    }
+
+    #[test]
+    fn track_ref_parsing() {
+        assert_eq!(parse_track_ref("18:5"), Some((18, 5)));
+        assert_eq!(parse_track_ref("112:1"), Some((112, 1)));
+        assert_eq!(parse_track_ref("Bismillah"), None);
+        assert_eq!(parse_track_ref("18:"), None);
+        assert_eq!(parse_track_ref("18:x"), None);
     }
 
     #[test]

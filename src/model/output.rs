@@ -34,6 +34,11 @@ pub struct OutputChannel {
     pub device_name: Option<String>,
     pub config: PlaybackConfig,
 
+    /// Snapshot of `config` when playback last started. Now Playing reads this
+    /// instead of `config` so that editing the range in Browse doesn't disturb
+    /// what's shown on the Now Playing tab.
+    pub display_config: Option<PlaybackConfig>,
+
     // Mirrored from the engine thread.
     pub state: EngineState,
     pub track_index: usize,
@@ -67,6 +72,7 @@ impl OutputChannel {
             label,
             device_name,
             config,
+            display_config: None,
             state: EngineState::Idle,
             track_index: 0,
             track_total: 0,
