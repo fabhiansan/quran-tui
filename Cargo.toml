@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "Terminal UI Quran audio player (standalone + multi-output)"
 license = "MIT"
+repository = "https://github.com/fabhiansan/quran-tui"
+homepage = "https://github.com/fabhiansan/quran-tui"
+readme = "README.md"
+keywords = ["quran", "tui", "audio", "ratatui"]
+categories = ["command-line-utilities", "multimedia::audio"]
 
 [dependencies]
 ratatui = { version = "0.29", features = ["serde"] }
