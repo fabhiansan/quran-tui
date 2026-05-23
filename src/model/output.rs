@@ -22,6 +22,9 @@ pub struct DownloadProgress {
     pub label: String,
     /// Whether to start playing once the download completes.
     pub autoplay: bool,
+    /// `Some` when this download was triggered to play a playlist — its id, so
+    /// the completion handler re-resolves and plays that playlist.
+    pub playlist_id: Option<String>,
 }
 
 /// One output channel: its config, mirrored playback state, and the command

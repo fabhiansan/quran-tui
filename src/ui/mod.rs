@@ -5,7 +5,7 @@ mod browse;
 mod help;
 mod now_playing;
 mod outputs;
-mod presets;
+mod playlists;
 mod theme;
 mod widgets;
 
@@ -117,7 +117,7 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &mut App) {
         Tab::NowPlaying => now_playing::draw(frame, inner, app),
         Tab::Browse => browse::draw(frame, inner, app),
         Tab::Outputs => outputs::draw(frame, inner, app),
-        Tab::Presets => presets::draw(frame, inner, app),
+        Tab::Playlists => playlists::draw(frame, inner, app),
     }
 }
 
@@ -222,8 +222,8 @@ fn transport_hint(tab: Tab) -> &'static str {
         Tab::Outputs => {
             " Tab switch list   ↑/↓ select   + add   Enter bind   d delete   r refresh   q quit"
         }
-        Tab::Presets => {
-            " ↑/↓ select   Enter load   s save   d delete   r rename   1 Now Playing   q quit"
+        Tab::Playlists => {
+            " Tab pane   ↑/↓ select   Enter play   n new   a add tracks   d delete   r rename   q quit"
         }
         _ => {
             " Space play/pause   s stop   n/p track   l loop   +/- vol   Tab tabs   ? help   q quit"

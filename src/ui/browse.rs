@@ -190,7 +190,7 @@ fn draw_availability(frame: &mut Frame, area: Rect, app: &App) {
 
 fn draw_footer(frame: &mut Frame, area: Rect) {
     let line = Line::from(Span::styled(
-        "  [Enter] play on focused output    [a] queue without playing",
+        "  [Enter] play    [a] queue without playing    [A] add to playlist",
         dim(),
     ));
     frame.render_widget(Paragraph::new(line), area);

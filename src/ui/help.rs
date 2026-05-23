@@ -75,7 +75,7 @@ fn right_column() -> Vec<Line<'static>> {
         binding("Tab", "Cycle range fields"),
         binding("0-9", "Edit focused field"),
         binding("Enter", "Play on focused output"),
-        binding("a", "Queue without playing"),
+        binding("a  A", "Queue / add to playlist"),
         Line::from(""),
         heading("Outputs"),
         binding("Tab", "Switch channel/device"),
@@ -83,8 +83,9 @@ fn right_column() -> Vec<Line<'static>> {
         binding("Enter", "Bind device"),
         binding("r", "Refresh devices"),
         Line::from(""),
-        heading("Presets"),
-        binding("Enter", "Load preset"),
-        binding("s  d  r", "Save / delete / rename"),
+        heading("Playlists"),
+        binding("Enter", "Play playlist"),
+        binding("n  a", "New / add tracks"),
+        binding("d  r", "Delete / rename"),
     ]
 }

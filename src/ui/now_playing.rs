@@ -135,7 +135,15 @@ fn draw_playing(frame: &mut Frame, area: Rect, app: &App, output: &OutputChannel
     // Use the snapshot taken when playback started so that browsing elsewhere
     // doesn't change what's shown on the Now Playing tab.
     let cfg = output.display_config.as_ref().unwrap_or(&output.config);
-    let surah = app.catalog.surah(cfg.from_surah);
+    // Follow the surah of the track actually playing rather than the range
+    // start — keeps the heading correct as a multi-surah range or playlist
+    // advances. Falls back to the range start for non-ayah tracks (bismillah).
+    let current_surah = output
+        .current_track_label()
+        .and_then(crate::app::parse_track_ref)
+        .map(|(s, _)| s)
+        .unwrap_or(cfg.from_surah);
+    let surah = app.catalog.surah(current_surah);
     let reciter_name = app
         .catalog
         .reciter(&cfg.reciter_id)
@@ -161,7 +169,7 @@ fn draw_playing(frame: &mut Frame, area: Rect, app: &App, output: &OutputChannel
                 s.number, s.revelation_place, s.ayah_count
             ),
         ),
-        None => (format!("  ♪  Surah {}", cfg.from_surah), String::new()),
+        None => (format!("  ♪  Surah {current_surah}"), String::new()),
     };
     lines.push(Line::from(Span::styled(heading, bold.fg(theme::ACCENT))));
     if !sub.is_empty() {

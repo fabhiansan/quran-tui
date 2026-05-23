@@ -20,7 +20,7 @@ use crate::domain::verses::{SurahVerses, Verse};
 use crate::event::{AppMessage, DownloadUpdate};
 use crate::model::output::{DownloadProgress, OutputChannel, OutputId};
 use crate::model::playback_config::PlaybackConfig;
-use crate::model::preset::PresetStore;
+use crate::model::playlist::{Playlist, PlaylistItem, PlaylistStore};
 
 /// Volume step for the `+` / `-` keys.
 const VOLUME_STEP: f32 = 0.05;
@@ -34,12 +34,12 @@ pub enum Tab {
     NowPlaying,
     Browse,
     Outputs,
-    Presets,
+    Playlists,
 }
 
 impl Tab {
     /// Tabs in display order; index 0 is the landing screen.
-    pub const ALL: [Tab; 4] = [Tab::NowPlaying, Tab::Browse, Tab::Outputs, Tab::Presets];
+    pub const ALL: [Tab; 4] = [Tab::NowPlaying, Tab::Browse, Tab::Outputs, Tab::Playlists];
 
     /// Human-readable tab label shown in the tab strip.
     pub fn title(self) -> &'static str {
@@ -47,7 +47,7 @@ impl Tab {
             Tab::NowPlaying => "Now Playing",
             Tab::Browse => "Browse",
             Tab::Outputs => "Outputs",
-            Tab::Presets => "Presets",
+            Tab::Playlists => "Playlists",
         }
     }
 
@@ -145,17 +145,26 @@ pub enum OutputsFocus {
     Devices,
 }
 
+/// Which pane the Playlists tab is currently navigating.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlaylistPane {
+    /// The list of playlists, on the left.
+    Playlists,
+    /// The tracks within the selected playlist, on the right.
+    Items,
+}
+
 /// What a confirmed text-input modal should do.
 #[derive(Debug, Clone)]
 pub enum TextAction {
-    SavePreset,
-    RenamePreset(String),
+    CreatePlaylist,
+    RenamePlaylist(String),
 }
 
 /// What a confirmed yes/no modal should do.
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    DeletePreset(String),
+    DeletePlaylist(String),
 }
 
 /// A modal dialog that captures all input until dismissed (§7.7).
@@ -196,11 +205,14 @@ pub struct App {
     pub browse: BrowseState,
     pub toast: Option<Toast>,
 
-    /// Saved presets and the list cursor on the Presets tab.
-    pub presets: PresetStore,
-    pub preset_cursor: usize,
-    /// Device labels named in a preset whose devices were absent on load.
-    pub missing_devices: Vec<String>,
+    /// Saved playlists and the Playlists-tab navigation state.
+    pub playlists: PlaylistStore,
+    /// Cursor into the playlist list (left pane).
+    pub playlist_cursor: usize,
+    /// Cursor into the selected playlist's tracks (right pane).
+    pub playlist_item_cursor: usize,
+    /// Which Playlists-tab pane currently has focus.
+    pub playlist_pane: PlaylistPane,
     /// The active modal dialog, if any.
     pub modal: Option<Modal>,
 
@@ -258,9 +270,10 @@ impl App {
             next_output_id: 1,
             browse: BrowseState::new(cursor),
             toast: None,
-            presets: PresetStore::load(),
-            preset_cursor: 0,
-            missing_devices: Vec::new(),
+            playlists: PlaylistStore::load(),
+            playlist_cursor: 0,
+            playlist_item_cursor: 0,
+            playlist_pane: PlaylistPane::Playlists,
             modal: None,
             verses: HashMap::new(),
             verses_pending: HashSet::new(),
@@ -315,7 +328,7 @@ impl App {
         if self.active_tab == Tab::Outputs && self.handle_outputs_key(key) {
             return;
         }
-        if self.active_tab == Tab::Presets && self.handle_presets_key(key) {
+        if self.active_tab == Tab::Playlists && self.handle_playlists_key(key) {
             return;
         }
         if self.active_tab == Tab::NowPlaying && self.handle_now_playing_key(key) {
@@ -360,24 +373,32 @@ impl App {
                     return;
                 }
                 match action {
-                    TextAction::SavePreset => {
-                        self.presets.save_current(name, &self.outputs);
-                        self.preset_cursor = 0;
-                        self.set_toast(format!("Saved preset \"{name}\""), ToastKind::Info);
+                    TextAction::CreatePlaylist => {
+                        let id = self.playlists.create(name);
+                        self.playlist_cursor = self
+                            .playlists
+                            .playlists
+                            .iter()
+                            .position(|p| p.id == id)
+                            .unwrap_or(0);
+                        self.playlist_item_cursor = 0;
+                        self.playlist_pane = PlaylistPane::Playlists;
+                        self.set_toast(format!("Created playlist \"{name}\""), ToastKind::Info);
                     }
-                    TextAction::RenamePreset(id) => {
-                        self.presets.rename(&id, name);
-                        self.set_toast("Preset renamed", ToastKind::Info);
+                    TextAction::RenamePlaylist(id) => {
+                        self.playlists.rename(&id, name);
+                        self.set_toast("Playlist renamed", ToastKind::Info);
                     }
                 }
             }
             Modal::Confirm { action, .. } => match action {
-                ConfirmAction::DeletePreset(id) => {
-                    self.presets.delete(&id);
-                    self.preset_cursor = self
-                        .preset_cursor
-                        .min(self.presets.presets.len().saturating_sub(1));
-                    self.set_toast("Preset deleted", ToastKind::Info);
+                ConfirmAction::DeletePlaylist(id) => {
+                    self.playlists.delete(&id);
+                    self.playlist_cursor = self
+                        .playlist_cursor
+                        .min(self.playlists.playlists.len().saturating_sub(1));
+                    self.playlist_item_cursor = 0;
+                    self.set_toast("Playlist deleted", ToastKind::Info);
                 }
             },
         }
@@ -393,12 +414,10 @@ impl App {
             (KeyCode::Char('1'), _) => self.active_tab = Tab::NowPlaying,
             (KeyCode::Char('2'), _) => self.active_tab = Tab::Browse,
             (KeyCode::Char('3'), _) => self.active_tab = Tab::Outputs,
-            (KeyCode::Char('4'), _) => self.active_tab = Tab::Presets,
+            (KeyCode::Char('4'), _) => self.active_tab = Tab::Playlists,
 
             (KeyCode::Char(' '), _) => self.toggle_play(),
-            (KeyCode::Char('s'), _) if !matches!(self.active_tab, Tab::Browse | Tab::Presets) => {
-                self.stop_focused()
-            }
+            (KeyCode::Char('s'), _) if self.active_tab != Tab::Browse => self.stop_focused(),
             (KeyCode::Char('n'), _) => self.transport(EngineCommand::Next),
             (KeyCode::Char('p'), _) => self.transport(EngineCommand::Prev),
             (KeyCode::Char('l'), _) => self.toggle_loop(),
@@ -434,6 +453,7 @@ impl App {
                 self.commit_browse_field();
                 self.start_playback(self.focused_output, false);
             }
+            KeyCode::Char('A') => self.add_browse_selection_to_playlist(),
             KeyCode::Backspace if self.browse.field.is_numeric() => {
                 self.browse.edit_buffer.pop();
             }
@@ -731,7 +751,10 @@ impl App {
                     ToastKind::Info,
                 );
             }
-            Resolution::Missing { .. } => self.begin_download(index, &segments, &reciter, autoplay),
+            Resolution::Missing { .. } => {
+                self.outputs[index].display_config = Some(cfg.clone());
+                self.begin_download(index, &segments, &reciter, autoplay);
+            }
         }
     }
 
@@ -779,7 +802,11 @@ impl App {
         });
     }
 
-    /// Spawn a worker to download the missing files for `index`.
+    /// Spawn a worker to download the missing files for `index`, and load the
+    /// engine optimistically with the full deterministic track list. The
+    /// engine waits on tracks whose files aren't on disk yet and picks them
+    /// up as the downloader writes them — so playback starts as soon as the
+    /// first ayah is ready, without waiting for the whole range to finish.
     fn begin_download(
         &mut self,
         index: usize,
@@ -793,16 +820,21 @@ impl App {
             return;
         }
         let total = missing.len();
+
+        let tracks = resolver::per_ayah_paths(segments, reciter, &self.config.audio_root);
+        self.apply_local(index, tracks, segments, autoplay);
+
         self.outputs[index].download = Some(DownloadProgress {
             done: 0,
             total,
             label: "starting".to_string(),
             autoplay,
+            playlist_id: None,
         });
         let output_id = self.outputs[index].id;
         downloader::download_missing(missing, self.msg_tx.clone(), output_id);
         self.set_toast(
-            format!("Downloading {total} ayah file(s)…"),
+            format!("Downloading {total} ayah file(s) — playing as they arrive"),
             ToastKind::Info,
         );
     }
@@ -1021,98 +1053,268 @@ impl App {
         }
     }
 
-    // --- Presets ----------------------------------------------------------
+    // --- Playlists --------------------------------------------------------
 
-    /// Presets-tab key handling. Returns `true` if the key was consumed.
-    fn handle_presets_key(&mut self, key: KeyEvent) -> bool {
+    /// Playlists-tab key handling. Returns `true` if the key was consumed.
+    fn handle_playlists_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Up => self.move_preset_cursor(-1),
-            KeyCode::Down => self.move_preset_cursor(1),
-            KeyCode::Char('s') => self.open_save_modal(),
-            KeyCode::Char('d') => self.open_delete_modal(),
-            KeyCode::Char('r') => self.open_rename_modal(),
-            KeyCode::Enter => self.load_selected_preset(),
+            KeyCode::Tab | KeyCode::BackTab => self.toggle_playlist_pane(),
+            KeyCode::Up => self.playlist_nav(-1),
+            KeyCode::Down => self.playlist_nav(1),
+            KeyCode::Char('n') => self.open_create_playlist_modal(),
+            KeyCode::Char('r') => self.open_rename_playlist_modal(),
+            KeyCode::Char('d') => self.delete_at_playlist_cursor(),
+            KeyCode::Char('a') => self.jump_to_browse_for_playlist(),
+            KeyCode::Enter => self.play_selected_playlist(),
             _ => return false,
         }
         true
     }
 
-    fn move_preset_cursor(&mut self, delta: isize) {
-        if self.presets.presets.is_empty() {
-            return;
-        }
-        let last = self.presets.presets.len() as isize - 1;
-        let next = (self.preset_cursor as isize + delta).clamp(0, last);
-        self.preset_cursor = next as usize;
-    }
-
-    fn open_save_modal(&mut self) {
-        let default_name = format!("Preset {}", self.presets.presets.len() + 1);
-        self.modal = Some(Modal::Text {
-            title: "Save current setup as preset".to_string(),
-            input: default_name,
-            action: TextAction::SavePreset,
-        });
-    }
-
-    fn open_delete_modal(&mut self) {
-        let Some(preset) = self.presets.presets.get(self.preset_cursor) else {
-            self.set_toast("No preset selected", ToastKind::Warn);
-            return;
+    fn toggle_playlist_pane(&mut self) {
+        self.playlist_pane = match self.playlist_pane {
+            PlaylistPane::Playlists => PlaylistPane::Items,
+            PlaylistPane::Items => PlaylistPane::Playlists,
         };
-        self.modal = Some(Modal::Confirm {
-            title: "Delete preset".to_string(),
-            message: format!("Delete \"{}\"?", preset.name),
-            action: ConfirmAction::DeletePreset(preset.id.clone()),
-        });
     }
 
-    fn open_rename_modal(&mut self) {
-        let Some(preset) = self.presets.presets.get(self.preset_cursor) else {
-            self.set_toast("No preset selected", ToastKind::Warn);
-            return;
-        };
-        self.modal = Some(Modal::Text {
-            title: "Rename preset".to_string(),
-            input: preset.name.clone(),
-            action: TextAction::RenamePreset(preset.id.clone()),
-        });
-    }
-
-    fn load_selected_preset(&mut self) {
-        let Some(preset) = self.presets.presets.get(self.preset_cursor).cloned() else {
-            self.set_toast("No preset selected", ToastKind::Warn);
-            return;
-        };
-        // Apply each entry to the matching output; loading never auto-plays.
-        let mut missing = Vec::new();
-        for entry in &preset.entries {
-            match self
-                .outputs
-                .iter_mut()
-                .find(|o| o.device_name == entry.device_name)
-            {
-                Some(output) => {
-                    output.config = entry.config.clone();
-                    output.send(EngineCommand::SetVolume(entry.config.volume));
-                    output.send(EngineCommand::SetLoop(entry.config.loop_enabled));
+    /// Move the cursor within whichever Playlists-tab pane has focus.
+    fn playlist_nav(&mut self, delta: isize) {
+        match self.playlist_pane {
+            PlaylistPane::Playlists => {
+                if self.playlists.playlists.is_empty() {
+                    return;
                 }
-                None => missing.push(entry.device_label.clone()),
+                let last = self.playlists.playlists.len() as isize - 1;
+                self.playlist_cursor =
+                    (self.playlist_cursor as isize + delta).clamp(0, last) as usize;
+                // A different playlist is selected — re-anchor the item cursor.
+                self.playlist_item_cursor = 0;
+            }
+            PlaylistPane::Items => {
+                let len = self.selected_playlist_len();
+                if len == 0 {
+                    return;
+                }
+                let last = len as isize - 1;
+                self.playlist_item_cursor =
+                    (self.playlist_item_cursor as isize + delta).clamp(0, last) as usize;
             }
         }
-        self.missing_devices = missing;
-        if self.missing_devices.is_empty() {
-            self.set_toast(format!("Loaded \"{}\"", preset.name), ToastKind::Info);
-        } else {
+    }
+
+    /// Number of tracks in the currently selected playlist.
+    fn selected_playlist_len(&self) -> usize {
+        self.playlists
+            .playlists
+            .get(self.playlist_cursor)
+            .map(|p| p.items.len())
+            .unwrap_or(0)
+    }
+
+    fn open_create_playlist_modal(&mut self) {
+        let default_name = format!("Playlist {}", self.playlists.playlists.len() + 1);
+        self.modal = Some(Modal::Text {
+            title: "New playlist".to_string(),
+            input: default_name,
+            action: TextAction::CreatePlaylist,
+        });
+    }
+
+    fn open_rename_playlist_modal(&mut self) {
+        let Some(playlist) = self.playlists.playlists.get(self.playlist_cursor) else {
+            self.set_toast("No playlist selected", ToastKind::Warn);
+            return;
+        };
+        self.modal = Some(Modal::Text {
+            title: "Rename playlist".to_string(),
+            input: playlist.name.clone(),
+            action: TextAction::RenamePlaylist(playlist.id.clone()),
+        });
+    }
+
+    /// `d` — delete the selected playlist (with a confirm), or, on the Items
+    /// pane, remove the selected track from the playlist immediately.
+    fn delete_at_playlist_cursor(&mut self) {
+        match self.playlist_pane {
+            PlaylistPane::Playlists => {
+                let Some(playlist) = self.playlists.playlists.get(self.playlist_cursor) else {
+                    self.set_toast("No playlist selected", ToastKind::Warn);
+                    return;
+                };
+                self.modal = Some(Modal::Confirm {
+                    title: "Delete playlist".to_string(),
+                    message: format!("Delete \"{}\"?", playlist.name),
+                    action: ConfirmAction::DeletePlaylist(playlist.id.clone()),
+                });
+            }
+            PlaylistPane::Items => {
+                let Some(playlist) = self.playlists.playlists.get(self.playlist_cursor) else {
+                    return;
+                };
+                if playlist.items.is_empty() {
+                    self.set_toast("No track to remove", ToastKind::Warn);
+                    return;
+                }
+                let id = playlist.id.clone();
+                self.playlists.remove_item(&id, self.playlist_item_cursor);
+                let new_len = self.selected_playlist_len();
+                self.playlist_item_cursor =
+                    self.playlist_item_cursor.min(new_len.saturating_sub(1));
+                self.set_toast("Track removed", ToastKind::Info);
+            }
+        }
+    }
+
+    /// `a` — jump to Browse to compose a track for the selected playlist.
+    fn jump_to_browse_for_playlist(&mut self) {
+        let Some(playlist) = self.playlists.playlists.get(self.playlist_cursor) else {
+            self.set_toast("Create a playlist first — press n", ToastKind::Warn);
+            return;
+        };
+        let name = playlist.name.clone();
+        self.active_tab = Tab::Browse;
+        self.set_toast(
+            format!("Pick a range, then press  A  to add it to \"{name}\""),
+            ToastKind::Info,
+        );
+    }
+
+    /// `A` in Browse — append the current Browse selection (reciter + surah +
+    /// ayah range) to the selected playlist as a new track.
+    fn add_browse_selection_to_playlist(&mut self) {
+        self.commit_browse_field();
+        let Some(playlist) = self.playlists.playlists.get(self.playlist_cursor) else {
             self.set_toast(
-                format!(
-                    "Loaded \"{}\" — {} device(s) missing",
-                    preset.name,
-                    self.missing_devices.len()
-                ),
+                "No playlist yet — create one on the Playlists tab (4)",
                 ToastKind::Warn,
             );
+            return;
+        };
+        let (id, name) = (playlist.id.clone(), playlist.name.clone());
+        let cfg = &self.outputs[self.focused_output].config;
+        let item = PlaylistItem {
+            reciter_id: cfg.reciter_id.clone(),
+            from_surah: cfg.from_surah,
+            from_ayah: cfg.from_ayah,
+            to_surah: cfg.to_surah,
+            to_ayah: cfg.to_ayah,
+        };
+        self.playlists.add_item(&id, item);
+        self.set_toast(format!("Added a track to \"{name}\""), ToastKind::Info);
+    }
+
+    /// Enter on the Playlists tab — play the selected playlist on the focused
+    /// output.
+    fn play_selected_playlist(&mut self) {
+        let Some(playlist) = self.playlists.playlists.get(self.playlist_cursor).cloned() else {
+            self.set_toast("No playlist selected", ToastKind::Warn);
+            return;
+        };
+        self.play_playlist(self.focused_output, &playlist, true);
+    }
+
+    /// Resolve every item of `playlist` into one flat track list and load it
+    /// into output `index`'s engine. Missing files trigger a download that
+    /// re-resolves and plays the playlist once complete.
+    fn play_playlist(&mut self, index: usize, playlist: &Playlist, autoplay: bool) {
+        if self.outputs[index].download.is_some() {
+            self.set_toast("A download is already in progress", ToastKind::Warn);
+            return;
         }
+        if playlist.items.is_empty() {
+            self.set_toast("This playlist is empty — add tracks first", ToastKind::Warn);
+            return;
+        }
+
+        let mut tracks = Vec::new();
+        let mut labels = Vec::new();
+        let mut missing = Vec::new();
+        let mut all_segments = Vec::new();
+        for item in &playlist.items {
+            let Some(reciter) = self.catalog.reciter(&item.reciter_id).cloned() else {
+                continue;
+            };
+            let segments = playback_segments(
+                &self.catalog.surahs,
+                item.from_surah,
+                item.to_surah,
+                item.from_ayah,
+                item.to_ayah,
+            );
+            let root = &self.config.audio_root;
+            tracks.extend(resolver::per_ayah_paths(&segments, &reciter, root));
+            labels.extend(resolver::per_ayah_labels(&segments));
+            missing.extend(resolver::missing_files(&segments, &reciter, root));
+            all_segments.extend(segments);
+        }
+
+        if tracks.is_empty() {
+            self.set_toast("Nothing to play in this playlist", ToastKind::Warn);
+            return;
+        }
+        self.ensure_verses(&all_segments);
+
+        // Load the engine optimistically with the full deterministic track
+        // list — files that aren't on disk yet are filled in as the downloader
+        // writes them, so playback starts as soon as the first track is ready.
+        self.apply_playlist(index, playlist, tracks, labels, autoplay);
+
+        if !missing.is_empty() {
+            let total = missing.len();
+            self.outputs[index].download = Some(DownloadProgress {
+                done: 0,
+                total,
+                label: "starting".to_string(),
+                autoplay,
+                playlist_id: Some(playlist.id.clone()),
+            });
+            let output_id = self.outputs[index].id;
+            downloader::download_missing(missing, self.msg_tx.clone(), output_id);
+            self.set_toast(
+                format!(
+                    "Downloading {total} ayah file(s) for \"{}\" — playing as they arrive",
+                    playlist.name
+                ),
+                ToastKind::Info,
+            );
+        }
+    }
+
+    /// Load a fully-resolved playlist track list into output `index`'s engine.
+    fn apply_playlist(
+        &mut self,
+        index: usize,
+        playlist: &Playlist,
+        tracks: Vec<PathBuf>,
+        labels: Vec<String>,
+        autoplay: bool,
+    ) {
+        // Now Playing reads `display_config`; show the first track as the
+        // header. The per-track label + verse panel still follow live.
+        let first = &playlist.items[0];
+        let display = PlaybackConfig {
+            reciter_id: first.reciter_id.clone(),
+            from_surah: first.from_surah,
+            from_ayah: first.from_ayah,
+            to_surah: first.to_surah,
+            to_ayah: first.to_ayah,
+            volume: self.outputs[index].config.volume,
+            loop_enabled: self.outputs[index].config.loop_enabled,
+        };
+        let output = &mut self.outputs[index];
+        output.is_fallback = false;
+        output.track_total = tracks.len();
+        output.track_index = 0;
+        output.track_labels = labels;
+        output.display_config = Some(display);
+        let (volume, loop_enabled) = (output.config.volume, output.config.loop_enabled);
+        output.send(EngineCommand::SetVolume(volume));
+        output.send(EngineCommand::Load {
+            tracks,
+            loop_enabled,
+            autoplay,
+        });
     }
 
     // --- Messages ---------------------------------------------------------
@@ -1159,17 +1361,31 @@ impl App {
                 }
             }
             DownloadUpdate::Completed => {
-                let autoplay = self.outputs[index]
-                    .download
-                    .take()
-                    .map(|p| p.autoplay)
-                    .unwrap_or(true);
+                // The engine has been playing as files arrived — nothing left
+                // to load. Just clear the download indicator.
+                self.outputs[index].download = None;
                 self.set_toast("Download complete", ToastKind::Info);
-                self.start_playback(index, autoplay);
             }
             DownloadUpdate::Failed(err) => {
+                let was_playlist = self.outputs[index]
+                    .download
+                    .as_ref()
+                    .map(|p| p.playlist_id.is_some())
+                    .unwrap_or(false);
                 self.outputs[index].download = None;
-                self.fallback_after_failed_download(index, &err);
+                let output = &self.outputs[index];
+                let already_played = output.track_index > 0 || !output.elapsed.is_zero();
+                // If something already played, or it's a playlist (no whole-
+                // surah fallback applies), truncate at the missing file so the
+                // engine finishes cleanly on what's already downloaded.
+                // Otherwise fall back to the whole-surah file if one exists.
+                if already_played || was_playlist {
+                    output.send(EngineCommand::DropMissing);
+                    self.set_toast(format!("Download failed: {err}"), ToastKind::Error);
+                } else {
+                    output.send(EngineCommand::Stop);
+                    self.fallback_after_failed_download(index, &err);
+                }
             }
         }
     }
@@ -1272,7 +1488,7 @@ fn restore_config(catalog: &Catalog, config: &AppConfig) -> PlaybackConfig {
 
 /// Parse a track label such as `"18:5"` into `(surah, ayah)`. Non-ayah labels
 /// like `"Bismillah"` yield `None`.
-fn parse_track_ref(label: &str) -> Option<(u16, u16)> {
+pub fn parse_track_ref(label: &str) -> Option<(u16, u16)> {
     let (surah, ayah) = label.split_once(':')?;
     Some((surah.parse().ok()?, ayah.parse().ok()?))
 }
@@ -1448,58 +1664,67 @@ mod tests {
     }
 
     #[test]
-    fn save_then_delete_preset_via_modals() {
-        use crate::model::preset::PresetStore;
+    fn create_then_delete_playlist_via_modals() {
+        use crate::model::playlist::PlaylistStore;
 
         let mut app = test_app();
-        app.presets = PresetStore::in_memory();
+        app.playlists = PlaylistStore::in_memory();
         app.handle_key(key('4'));
-        assert_eq!(app.active_tab, Tab::Presets);
-        assert_eq!(app.presets.presets.len(), 0);
+        assert_eq!(app.active_tab, Tab::Playlists);
+        assert_eq!(app.playlists.playlists.len(), 0);
 
-        // s opens the save modal; Enter confirms the default name.
-        app.handle_key(key('s'));
+        // n opens the new-playlist modal; Enter confirms the default name.
+        app.handle_key(key('n'));
         assert!(app.modal.is_some());
         app.handle_key(special(KeyCode::Enter));
         assert!(app.modal.is_none());
-        assert_eq!(app.presets.presets.len(), 1);
+        assert_eq!(app.playlists.playlists.len(), 1);
 
         // d opens a confirm modal; y deletes.
         app.handle_key(key('d'));
         assert!(app.modal.is_some());
         app.handle_key(key('y'));
-        assert_eq!(app.presets.presets.len(), 0);
+        assert_eq!(app.playlists.playlists.len(), 0);
     }
 
     #[test]
-    fn loading_a_preset_restores_config_and_does_not_play() {
-        use crate::model::preset::PresetStore;
+    fn add_browse_selection_appends_a_playlist_track() {
+        use crate::model::playlist::PlaylistStore;
 
         let mut app = test_app();
-        app.presets = PresetStore::in_memory();
+        app.playlists = PlaylistStore::in_memory();
 
-        app.outputs[0].config.from_surah = 36;
-        app.outputs[0].config.to_surah = 36;
-        app.presets.save_current("Ya-Sin", &app.outputs);
-
-        // Change the config, then load the preset back.
-        app.outputs[0].config.from_surah = 1;
+        // Create a playlist on the Playlists tab.
         app.handle_key(key('4'));
+        app.handle_key(key('n'));
         app.handle_key(special(KeyCode::Enter));
+        assert_eq!(app.playlists.playlists.len(), 1);
+        assert!(app.playlists.playlists[0].items.is_empty());
 
-        assert_eq!(app.outputs[0].config.from_surah, 36);
-        assert!(!app.outputs[0].is_playing());
-        assert!(app.missing_devices.is_empty());
+        // Pick Al-Mulk in Browse, then A appends it as a track.
+        app.handle_key(key('2'));
+        app.handle_key(key('/'));
+        for c in "mulk".chars() {
+            app.handle_key(key(c));
+        }
+        app.handle_key(special(KeyCode::Esc));
+        assert_eq!(app.focused().config.from_surah, 67);
+
+        app.handle_key(key('A'));
+        let items = &app.playlists.playlists[0].items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].from_surah, 67);
+        assert_eq!(items[0].to_surah, 67);
     }
 
     #[test]
     fn renders_every_tab_and_overlay_without_panicking() {
-        use crate::model::preset::PresetStore;
+        use crate::model::playlist::PlaylistStore;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
         let mut app = test_app();
-        app.presets = PresetStore::in_memory();
+        app.playlists = PlaylistStore::in_memory();
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
 
         for tab in ['1', '2', '3', '4'] {
@@ -1512,9 +1737,9 @@ mod tests {
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         app.handle_key(key('?'));
 
-        // A text-input modal over the Presets tab.
+        // A text-input modal over the Playlists tab.
         app.handle_key(key('4'));
-        app.handle_key(key('s'));
+        app.handle_key(key('n'));
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
 
         // Below the minimum terminal size → the size guard renders.

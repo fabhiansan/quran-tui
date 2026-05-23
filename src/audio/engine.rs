@@ -52,6 +52,10 @@ pub enum EngineCommand {
     Prev,
     SetVolume(f32),
     SetLoop(bool),
+    /// Truncate the playlist at the first track (from the current position)
+    /// whose file is not on disk — used when a download fails partway, so the
+    /// engine doesn't wait forever on a file that will never arrive.
+    DropMissing,
     Shutdown,
 }
 
@@ -249,6 +253,7 @@ impl EngineRuntime {
             EngineCommand::SetLoop(enabled) => self.loop_enabled = enabled,
             EngineCommand::Next => self.skip_to(self.current_index().saturating_add(1)),
             EngineCommand::Prev => self.skip_to(self.current_index().saturating_sub(1)),
+            EngineCommand::DropMissing => self.drop_missing(),
             EngineCommand::Shutdown => {
                 self.sink.stop();
                 return true;
@@ -298,10 +303,16 @@ impl EngineRuntime {
     }
 
     /// Append tracks (decoded from memory) until the sink holds [`WINDOW`]
-    /// items or every track is queued.
+    /// items or every track is queued. A track whose file is not on disk yet
+    /// (still being downloaded) stops the loop without advancing `appended`,
+    /// so the next tick retries it.
     fn fill_window(&mut self) {
         while self.sink.len() < WINDOW && self.appended < self.tracks.len() {
             let idx = self.appended;
+            if !self.tracks[idx].exists() {
+                // Still being downloaded — wait for it instead of skipping.
+                break;
+            }
             match decode_track(&self.tracks[idx]) {
                 Ok((source, duration)) => {
                     self.durations[idx] = duration;
@@ -316,6 +327,18 @@ impl EngineRuntime {
                 }
             }
             self.appended += 1;
+        }
+    }
+
+    /// Truncate the playlist at the first track at or after the current
+    /// position whose file is not on disk. Lets the engine finish naturally
+    /// after a download failure instead of hanging on a file that won't come.
+    fn drop_missing(&mut self) {
+        let start = self.appended.min(self.tracks.len());
+        if let Some(offset) = self.tracks[start..].iter().position(|p| !p.exists()) {
+            let cut = start + offset;
+            self.tracks.truncate(cut);
+            self.durations.truncate(cut);
         }
     }
 
@@ -385,6 +408,12 @@ impl EngineRuntime {
         if remaining == 0 {
             // The sink drained and nothing more could be appended.
             if !self.playing {
+                return;
+            }
+            // Still tracks ahead that haven't been appended — they're either
+            // waiting on download or were skipped due to a decode error. Stay
+            // in play state and let the next tick retry via `fill_window`.
+            if self.appended < self.tracks.len() {
                 return;
             }
             if self.loop_enabled {

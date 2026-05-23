@@ -7,6 +7,8 @@ pub mod app;
 pub mod audio;
 pub mod config;
 pub mod content;
+#[cfg(unix)]
+pub mod daemon;
 pub mod domain;
 pub mod event;
 pub mod model;
