@@ -8,12 +8,12 @@ build:
 
 install: build
 	@mkdir -p $(INSTALL_DIR)
-	cp $(BINARY) $(INSTALL_DIR)/quran-tui
+	install -m 755 $(BINARY) $(INSTALL_DIR)/quran-tui
 
 reinstall:
 	cargo clean
 	cargo build --release
 	@mkdir -p $(INSTALL_DIR)
-	cp $(BINARY) $(INSTALL_DIR)/quran-tui
+	install -m 755 $(BINARY) $(INSTALL_DIR)/quran-tui
 
 .DEFAULT_GOAL := build
