@@ -33,8 +33,7 @@ pub fn connect_or_spawn(audio_dir: Option<PathBuf>, log_level: &str) -> Result<(
         return run_client(stream);
     }
 
-    spawn_detached_daemon(audio_dir.as_deref(), log_level)
-        .context("spawn detached daemon")?;
+    spawn_detached_daemon(audio_dir.as_deref(), log_level).context("spawn detached daemon")?;
     tracing::info!("spawned daemon; awaiting socket");
 
     let deadline = Instant::now() + SPAWN_BUDGET;
@@ -69,17 +68,13 @@ pub fn stop() -> Result<()> {
         },
     )?;
     // Consume Welcome (best effort).
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
     let _ = read_msg::<_, DaemonMsg>(&mut stream);
 
     write_msg(&mut stream, &ClientMsg::Shutdown)?;
 
     // Wait briefly for Bye / EOF as confirmation.
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let _ = read_msg::<_, DaemonMsg>(&mut stream);
     eprintln!("daemon stopped");
     Ok(())

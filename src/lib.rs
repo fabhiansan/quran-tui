@@ -11,5 +11,6 @@ pub mod content;
 pub mod daemon;
 pub mod domain;
 pub mod event;
+pub mod media_keys;
 pub mod model;
 pub mod ui;

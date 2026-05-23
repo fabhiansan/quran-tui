@@ -27,6 +27,14 @@ time = { version = "0.3", features = ["formatting"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# macOS-only: media key + Now Playing integration via MPRemoteCommandCenter,
+# plus a CFRunLoop pump so the souvlaki callback blocks fire from our TUI loop.
+[target.'cfg(target_os = "macos")'.dependencies]
+souvlaki = { version = "0.8", default-features = false }
+core-foundation = "0.9"
+coreaudio-rs = "0.11"
+objc = "0.2"
+
 [profile.release]
 strip = true
 lto = "thin"

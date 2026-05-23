@@ -146,12 +146,13 @@ fn run(
     tracing::debug!("engine {id} thread exiting");
 }
 
-/// Open an output stream for `device`, falling back to the system default.
+/// Open an output stream. `None` follows the system default; an explicit device
+/// must open successfully so a failed binding cannot silently play on speakers.
 fn open_stream(
     device: Option<&rodio::cpal::Device>,
 ) -> Result<(OutputStream, OutputStreamHandle), rodio::StreamError> {
     match device {
-        Some(dev) => OutputStream::try_from_device(dev).or_else(|_| OutputStream::try_default()),
+        Some(dev) => OutputStream::try_from_device(dev),
         None => OutputStream::try_default(),
     }
 }

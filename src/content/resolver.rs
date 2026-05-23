@@ -196,14 +196,23 @@ pub fn missing_files(
 /// without checking whether the files exist — the path layout is deterministic.
 /// Parallel to [`per_ayah_labels`]. Used to assemble a playlist's full track
 /// list once [`missing_files`] has confirmed every file is present.
-pub fn per_ayah_paths(segments: &[PlaybackSegment], reciter: &Reciter, root: &Path) -> Vec<PathBuf> {
+pub fn per_ayah_paths(
+    segments: &[PlaybackSegment],
+    reciter: &Reciter,
+    root: &Path,
+) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for segment in segments {
         if should_prepend_bismillah(segment) {
             paths.push(bismillah_local_path(reciter, root));
         }
         for ayah in segment.range.clone() {
-            paths.push(per_ayah_local_path(reciter, segment.surah.number, ayah, root));
+            paths.push(per_ayah_local_path(
+                reciter,
+                segment.surah.number,
+                ayah,
+                root,
+            ));
         }
     }
     paths

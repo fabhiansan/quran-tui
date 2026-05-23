@@ -21,8 +21,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     ])
     .split(area);
 
-    let panes = Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)])
-        .split(rows[0]);
+    let panes =
+        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).split(rows[0]);
     draw_playlists_pane(frame, panes[0], app);
     draw_items_pane(frame, panes[1], app);
     draw_footer(frame, rows[1], app);

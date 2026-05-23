@@ -41,8 +41,14 @@ fn buffer_round_trips() {
     let decoded: DaemonMsg = read_msg(&mut r).unwrap();
     match (original, decoded) {
         (
-            DaemonMsg::Frame { buffer: a, cursor: ca },
-            DaemonMsg::Frame { buffer: b, cursor: cb },
+            DaemonMsg::Frame {
+                buffer: a,
+                cursor: ca,
+            },
+            DaemonMsg::Frame {
+                buffer: b,
+                cursor: cb,
+            },
         ) => {
             assert_eq!(a, b, "Buffer must round-trip losslessly");
             assert_eq!(ca, cb);
@@ -95,10 +101,7 @@ fn two_messages_decode_in_order() {
             h: 24
         }
     ));
-    assert!(matches!(
-        second,
-        ClientMsg::Resize { w: 100, h: 30 }
-    ));
+    assert!(matches!(second, ClientMsg::Resize { w: 100, h: 30 }));
 }
 
 #[test]

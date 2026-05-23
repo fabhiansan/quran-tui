@@ -17,7 +17,8 @@ use crate::content::resolver::{self, Resolution};
 use crate::domain::catalog::{Catalog, Reciter, Surah};
 use crate::domain::segment::{playback_segments, PlaybackSegment};
 use crate::domain::verses::{SurahVerses, Verse};
-use crate::event::{AppMessage, DownloadUpdate};
+use crate::event::{AppMessage, DownloadUpdate, MediaAction};
+use crate::media_keys::{NowPlayingSnapshot, NowPlayingState};
 use crate::model::output::{DownloadProgress, OutputChannel, OutputId};
 use crate::model::playback_config::PlaybackConfig;
 use crate::model::playlist::{Playlist, PlaylistItem, PlaylistStore};
@@ -286,6 +287,50 @@ impl App {
     /// The output channel that transport keys and Browse act on.
     pub fn focused(&self) -> &OutputChannel {
         &self.outputs[self.focused_output]
+    }
+
+    /// Clone of the shared message sender — so the main loop can hand it to
+    /// the OS media-key bridge, which forwards `MPRemoteCommandCenter` events
+    /// back into `handle_message`.
+    pub fn msg_tx(&self) -> Sender<AppMessage> {
+        self.msg_tx.clone()
+    }
+
+    /// Snapshot of what the OS Now Playing widget should show right now.
+    /// Built from the focused output so multi-output mode also publishes the
+    /// "currently watched" track. Falls back to "Quran TUI" when nothing's
+    /// loaded yet so the system's Now Playing UI still has a name to show.
+    pub fn now_playing_snapshot(&self) -> NowPlayingSnapshot {
+        let output = self.focused();
+        let cfg = output.display_config.as_ref().unwrap_or(&output.config);
+
+        // Title: prefer the per-track label (e.g. "18:5") backed by the surah
+        // name; fall back to the playing surah's name when only a whole-surah
+        // file is loaded.
+        let title = match output.current_track_label() {
+            Some(label) => format_track_title(&self.catalog, label, output.is_fallback, cfg),
+            None => format_default_title(&self.catalog, cfg),
+        };
+        let artist = self
+            .catalog
+            .reciter(&cfg.reciter_id)
+            .map(|r| r.display_name.clone())
+            .unwrap_or_else(|| "Unknown reciter".to_string());
+
+        let state = match output.state {
+            EngineState::Playing => NowPlayingState::Playing,
+            EngineState::Paused => NowPlayingState::Paused,
+            _ => NowPlayingState::Stopped,
+        };
+
+        NowPlayingSnapshot {
+            title,
+            artist,
+            album: "Quran".to_string(),
+            duration: output.track_len,
+            elapsed: output.elapsed,
+            state,
+        }
     }
 
     /// Per-frame housekeeping: drop expired toasts.
@@ -1333,6 +1378,29 @@ impl App {
                 tracing::error!("background error: {err}");
                 self.set_toast(err, ToastKind::Error);
             }
+            AppMessage::MediaControl(action) => self.handle_media_action(action),
+        }
+    }
+
+    /// Apply an OS media-control event (Mac media keys, Bluetooth, etc.) to the
+    /// focused output. Matches the in-app keys: space, n, p, s — so behaviour
+    /// stays consistent whether the user presses a key in the TUI or F8 in any
+    /// other window.
+    fn handle_media_action(&mut self, action: MediaAction) {
+        match action {
+            MediaAction::Toggle => self.toggle_play(),
+            MediaAction::Play => {
+                let index = self.focused_output;
+                if self.outputs[index].track_total == 0 {
+                    self.start_playback(index, true);
+                } else {
+                    self.outputs[index].send(EngineCommand::Play);
+                }
+            }
+            MediaAction::Pause => self.transport(EngineCommand::Pause),
+            MediaAction::Next => self.transport(EngineCommand::Next),
+            MediaAction::Prev => self.transport(EngineCommand::Prev),
+            MediaAction::Stop => self.stop_focused(),
         }
     }
 
@@ -1491,6 +1559,46 @@ fn restore_config(catalog: &Catalog, config: &AppConfig) -> PlaybackConfig {
 pub fn parse_track_ref(label: &str) -> Option<(u16, u16)> {
     let (surah, ayah) = label.split_once(':')?;
     Some((surah.parse().ok()?, ayah.parse().ok()?))
+}
+
+/// Now Playing title for the currently playing track. Handles three cases:
+/// per-ayah ("Al-Kahf 5"), whole-surah fallback ("Al-Kahf (full)"), and bare
+/// labels we don't recognise (`"Bismillah"`), which pass through verbatim.
+fn format_track_title(
+    catalog: &Catalog,
+    label: &str,
+    is_fallback: bool,
+    cfg: &PlaybackConfig,
+) -> String {
+    if is_fallback {
+        return format_default_title(catalog, cfg);
+    }
+    match parse_track_ref(label) {
+        Some((surah, ayah)) => match catalog.surah(surah) {
+            Some(s) => format!("{} {ayah}", s.name_transliterated),
+            None => label.to_string(),
+        },
+        None => label.to_string(),
+    }
+}
+
+/// Now Playing title when nothing is loaded yet, or when only a whole-surah
+/// file is playing. Pulls the surah name from the catalog and tacks on the
+/// ayah range if the user picked something narrower than the whole surah.
+fn format_default_title(catalog: &Catalog, cfg: &PlaybackConfig) -> String {
+    let Some(surah) = catalog.surah(cfg.from_surah) else {
+        return "Quran TUI".to_string();
+    };
+    if cfg.from_surah == cfg.to_surah && cfg.from_ayah == 1 && cfg.to_ayah == surah.ayah_count {
+        surah.name_transliterated.clone()
+    } else if cfg.from_surah == cfg.to_surah {
+        format!(
+            "{} {}–{}",
+            surah.name_transliterated, cfg.from_ayah, cfg.to_ayah
+        )
+    } else {
+        format!("{} …", surah.name_transliterated)
+    }
 }
 
 #[cfg(test)]

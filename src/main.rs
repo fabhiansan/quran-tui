@@ -20,6 +20,7 @@ use ratatui::Terminal;
 use tracing_appender::non_blocking::WorkerGuard;
 
 use quran_tui::app::App;
+use quran_tui::media_keys::{self, MediaKeys};
 use quran_tui::ui;
 
 /// Terminal UI Quran audio player.
@@ -67,7 +68,10 @@ fn main() -> Result<()> {
         if cli.daemon {
             let _log_guard = init_tracing_for("quran-tui-client.log", &cli.log_level)?;
             install_panic_hook();
-            tracing::info!("quran-tui client starting (audio_dir override: {:?})", cli.audio_dir);
+            tracing::info!(
+                "quran-tui client starting (audio_dir override: {:?})",
+                cli.audio_dir
+            );
             return quran_tui::daemon::client::connect_or_spawn(cli.audio_dir, &cli.log_level);
         }
     }
@@ -93,7 +97,8 @@ fn run_foreground(audio_dir: Option<PathBuf>) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(audio_dir);
-    let result = run(&mut terminal, &mut app);
+    let mut media = MediaKeys::init(app.msg_tx());
+    let result = run(&mut terminal, &mut app, &mut media);
     app.persist_config();
 
     tracing::info!("quran-tui exiting");
@@ -101,7 +106,11 @@ fn run_foreground(audio_dir: Option<PathBuf>) -> Result<()> {
 }
 
 /// The main render / input loop (§5.2 of the plan).
-fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
+fn run(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+    media: &mut MediaKeys,
+) -> Result<()> {
     // `poll(tick)` doubles as the redraw clock: ~8 frames/s even with no input.
     let tick = Duration::from_millis(120);
 
@@ -117,10 +126,14 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Resu
                 _ => {}
             }
         }
+        // Pump the macOS run loop so MPRemoteCommandCenter blocks can deliver
+        // queued F7/F8/F9 events into our channel (no-op on other platforms).
+        media_keys::pump();
         // Drain everything the background threads sent since the last frame.
         while let Ok(msg) = app.msg_rx.try_recv() {
             app.handle_message(msg);
         }
+        media.update(&app.now_playing_snapshot());
     }
     Ok(())
 }

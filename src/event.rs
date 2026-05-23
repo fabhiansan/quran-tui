@@ -20,6 +20,19 @@ pub enum AppMessage {
     },
     /// A non-fatal error to surface to the user.
     Error(String),
+    /// An OS-level media control event (Mac media keys, Bluetooth headset, etc.).
+    MediaControl(MediaAction),
+}
+
+/// What the OS asked us to do via the media controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaAction {
+    Toggle,
+    Play,
+    Pause,
+    Next,
+    Prev,
+    Stop,
 }
 
 /// Progress reported by a download worker thread.

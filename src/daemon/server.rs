@@ -19,6 +19,7 @@ use ratatui::Terminal;
 use crate::app::App;
 use crate::daemon::wire::{read_msg, write_msg, ClientMsg, DaemonMsg};
 use crate::daemon::{lock_path, socket_path, PROTO_VERSION};
+use crate::media_keys::{self, MediaKeys};
 use crate::ui;
 
 const TICK: Duration = Duration::from_millis(120);
@@ -51,6 +52,10 @@ pub fn serve(audio_dir: Option<PathBuf>) -> Result<()> {
     // 4. Headless app + in-memory terminal.
     let mut app = App::new(audio_dir);
     let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+    // The daemon process is the right place to register with macOS Now
+    // Playing — it owns the audio engines, and it lives whether or not a
+    // client is attached. F7/F8/F9 keep working after the terminal closes.
+    let mut media = MediaKeys::init(app.msg_tx());
 
     // 5. Accept thread → channel.
     let (conn_tx, conn_rx) = unbounded::<UnixStream>();
@@ -126,10 +131,7 @@ pub fn serve(audio_dir: Option<PathBuf>) -> Result<()> {
         // so we must read the just-rendered frame from the returned
         // `CompletedFrame` — NOT from `current_buffer_mut()`, which after the
         // swap is the reset back-buffer for the *next* frame.
-        let rendered: Buffer = terminal
-            .draw(|f| ui::draw(f, &mut app))?
-            .buffer
-            .clone();
+        let rendered: Buffer = terminal.draw(|f| ui::draw(f, &mut app))?.buffer.clone();
 
         // Ship frame only on change.
         let mut detach_after_send = false;
@@ -152,10 +154,15 @@ pub fn serve(audio_dir: Option<PathBuf>) -> Result<()> {
             active = None;
         }
 
+        // Pump the macOS run loop so queued media-key events can land in the
+        // shared channel before we drain it (no-op on other platforms).
+        media_keys::pump();
+
         // Drain engine messages.
         while let Ok(m) = app.msg_rx.try_recv() {
             app.handle_message(m);
         }
+        media.update(&app.now_playing_snapshot());
 
         // Pace the loop. No event::poll here — sleep the remainder.
         let elapsed = loop_start.elapsed();
@@ -208,7 +215,12 @@ fn attach_new_client(
     stream.set_read_timeout(None)?;
 
     resize_terminal(terminal, w, h);
-    write_msg(&mut stream, &DaemonMsg::Welcome { proto: PROTO_VERSION })?;
+    write_msg(
+        &mut stream,
+        &DaemonMsg::Welcome {
+            proto: PROTO_VERSION,
+        },
+    )?;
 
     let write_half = stream.try_clone().context("clone stream")?;
     let mut read_half = stream;

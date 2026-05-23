@@ -18,7 +18,9 @@ use quran_tui::daemon::{socket_path, PROTO_VERSION};
 #[ignore = "opens real audio device; run with `cargo test --test daemon_e2e -- --ignored --nocapture`"]
 fn daemon_produces_frames() {
     // Stop anything running and clear stale state.
-    let _ = Command::new(env!("CARGO_BIN_EXE_quran-tui")).arg("--stop").status();
+    let _ = Command::new(env!("CARGO_BIN_EXE_quran-tui"))
+        .arg("--stop")
+        .status();
     let _ = std::fs::remove_file(socket_path());
     thread::sleep(Duration::from_millis(200));
 
@@ -42,7 +44,9 @@ fn daemon_produces_frames() {
             Err(e) => panic!("daemon never became reachable: {e}"),
         }
     };
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
     eprintln!("connected to daemon");
 
     // Handshake.
@@ -94,7 +98,10 @@ fn daemon_produces_frames() {
             Err(e) => panic!("frame read failed: {e}"),
         }
     }
-    assert!(got_real_frame, "daemon never sent a frame with visible content");
+    assert!(
+        got_real_frame,
+        "daemon never sent a frame with visible content"
+    );
 
     // Cleanup.
     write_msg(&mut stream, &ClientMsg::Shutdown).unwrap();
